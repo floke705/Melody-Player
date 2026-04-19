@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Overdrive Scale Player</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 10px; display: flex; flex-direction: column; height: 100vh; background: #f4f6f9; overflow: hidden; user-select: none; -webkit-user-select: none; }
+    h1 { text-align: left; font-size: 1.4rem; margin: 0 0 10px 5px; color: #1a202c; flex-shrink: 0; }
+    .grid-container { display: flex; flex: 1; gap: 10px; overflow-y: auto; overflow-x: hidden; padding-bottom: 10px; }
+    .column { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .col-title { text-align: left; font-weight: bold; font-size: 0.8rem; color: #718096; margin-bottom: 2px; text-transform: uppercase; }
+    .note-btn { flex: 1; border: none; border-radius: 8px; background: #e2e8f0; font-size: 1.4rem; font-weight: bold; color: #2d3748; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); touch-action: none; transition: background 0.1s; }
+    .note-btn.active { background: #cbd5e0; box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); }
+    .freq-label { font-size: 0.75rem; color: #718096; font-weight: normal; margin-top: 4px; }
+    .controls { flex-shrink: 0; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 12px; border: 1px solid #e2e8f0; }
+    .control-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .control-group { display: flex; align-items: center; gap: 8px; flex: 1; }
+    label { font-size: 0.9rem; color: #4a5568; min-width: 40px; }
+    select { padding: 6px; border-radius: 6px; border: 1px solid #cbd5e0; flex: 1; background: white; }
+    .segmented { display: flex; border: 1px solid #3182ce; border-radius: 6px; overflow: hidden; flex: 2; }
+    .seg-btn { padding: 6px 0; border: none; background: white; color: #3182ce; font-size: 0.85rem; cursor: pointer; flex: 1; }
+    .seg-btn.active { background: #3182ce; color: white; font-weight: bold; }
+    .seg-btn:not(:last-child) { border-right: 1px solid #3182ce; }
+    input[type="range"] { flex: 1; }
+    .drive-val { min-width: 35px; text-align: center; padding: 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Overdrive Scale Player</h1>
+  
+  <div class="grid-container" id="grid"></div>
+  
+  <div class="controls">
+    <div class="control-row">
+      <div class="control-group">
+        <label>Root</label>
+        <select id="root-sel">
+          <option value="0">C</option><option value="2">D</option><option value="4">E</option>
+          <option value="5">F</option><option value="7">G</option><option value="9">A</option><option value="11">B</option>
+        </select>
+      </div>
+      <div class="control-group" style="flex: 2;">
+        <label>Accidental</label>
+        <div class="segmented" id="acc-seg">
+          <button class="seg-btn active" data-val="0">Natural</button>
+          <button class="seg-btn" data-val="-1">Flat</button>
+          <button class="seg-btn" data-val="1">Sharp</button>
+        </div>
+      </div>
+    </div>
+    <div class="control-row">
+      <div class="control-group">
+        <label>Scale</label>
+        <div class="segmented" id="scale-seg">
+          <button class="seg-btn active" data-val="major">Major</button>
+          <button class="seg-btn" data-val="minor">Minor</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <label>Drive</label>
+        <input type="range" id="drive-slider" min="0" max="100" value="50">
+        <div class="drive-val" id="drive-val">50</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let driveAmt = 50;
+    let activeNotes = {};
+
+    const driveGain = audioCtx.createGain();
+    const waveShaper = audioCtx.createWaveShaper();
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 2500;
+    
+    driveGain.connect(waveShaper);
+    waveShaper.connect(lowpass);
+    lowpass.connect(audioCtx.destination);
+    
+    function makeDistortionCurve(amount) {
+      const k = typeof amount === 'number' ? amount : 50;
+      const n_samples = 44100;
+      const curve = new Float32Array(n_samples);
+      const deg = Math.PI / 180;
+      for (let i = 0; i < n_samples; ++i) {
+        const x = (i * 2) / n_samples - 1;
+        curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+      }
+      return curve;
+    }
+    
+    function updateDrive() {
+      driveGain.gain.value = 1 + (driveAmt / 2);
+      waveShaper.curve = makeDistortionCurve(driveAmt * 4);
+    }
+    updateDrive();
+
+    const state = { root: 0, acc: 0, scale: 'major' };
+    const scales = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10] };
+    const labels = { major: ['1', '2', '3', '4', '5', '6', '7'], minor: ['1', '2', '♭3', '4', '5', '♭6', '♭7'] };
+
+    function calculateFreq(interval, octMult) {
+      return 261.63 * Math.pow(2, (state.root + state.acc + interval) / 12) * octMult;
+    }
+
+    function renderGrid() {
+      const grid = document.getElementById('grid');
+      grid.innerHTML = '';
+      const columns = [{ name: 'LOW', mult: 0.5 }, { name: 'MID', mult: 1.0 }, { name: 'HIGH', mult: 2.0 }];
+
+      columns.forEach(col => {
+        const colDiv = document.createElement('div');
+        colDiv.className = 'column';
+        colDiv.innerHTML = `<div class="col-title">${col.name}</div>`;
+
+        for (let i = 6; i >= 0; i--) {
+          const btn = document.createElement('button');
+          btn.className = 'note-btn';
+          const freq = calculateFreq(scales[state.scale][i], col.mult);
+          btn.innerHTML = `<span>${labels[state.scale][i]}</span><span class="freq-label">${freq.toFixed(1)}Hz</span>`;
+          
+          const startNote = (e) => {
+            e.preventDefault();
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            if(activeNotes[btn]) return;
+            btn.classList.add('active');
+            
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sawtooth';
+            osc.frequency.value = freq;
+            
+            const env = audioCtx.createGain();
+            env.gain.value = 0;
+            osc.connect(env);
+            env.connect(driveGain);
+            
+            osc.start();
+            env.gain.linearRampToValueAtTime(0.5, audioCtx.currentTime + 0.02);
+            activeNotes[btn] = { osc, env };
+          };
+          
+          const stopNote = (e) => {
+            e.preventDefault();
+            const note = activeNotes[btn];
+            if(note) {
+              btn.classList.remove('active');
+              const t = audioCtx.currentTime;
+              note.env.gain.cancelScheduledValues(t);
+              note.env.gain.setValueAtTime(note.env.gain.value, t);
+              note.env.gain.linearRampToValueAtTime(0, t + 0.1);
+              note.osc.stop(t + 0.1);
+              delete activeNotes[btn];
+            }
+          };
+
+          ['pointerdown', 'touchstart'].forEach(evt => btn.addEventListener(evt, startNote, {passive: false}));
+          ['pointerup', 'pointerleave', 'pointercancel', 'touchend', 'touchcancel'].forEach(evt => btn.addEventListener(evt, stopNote, {passive: false}));
+          colDiv.appendChild(btn);
+        }
+        grid.appendChild(colDiv);
+      });
+    }
+
+    document.getElementById('root-sel').addEventListener('change', e => { state.root = parseInt(e.target.value); renderGrid(); });
+    
+    document.querySelectorAll('#acc-seg .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#acc-seg .seg-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.acc = parseInt(btn.dataset.val);
+        renderGrid();
+      });
+    });
+
+    document.querySelectorAll('#scale-seg .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#scale-seg .seg-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.scale = btn.dataset.val;
+        renderGrid();
+      });
+    });
+
+    document.getElementById('drive-slider').addEventListener('input', e => {
+      driveAmt = parseInt(e.target.value);
+      document.getElementById('drive-val').innerText = driveAmt;
+      updateDrive();
+    });
+
+    renderGrid();
+  </script>
+</body>
+</html>
